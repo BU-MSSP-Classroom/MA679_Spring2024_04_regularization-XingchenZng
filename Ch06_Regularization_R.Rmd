@@ -1,6 +1,6 @@
 ---
 title: "Regularization"
-author: "Your Name"
+author: "Xingchen Zhang"
 date: "2023-01-05"
 output: html_document
 bibliography: lecture.bib
@@ -59,6 +59,9 @@ show_code <- TRUE
 Please take a look at the Ames Hoursing data.
 ```{r}
 library(AmesHousing)
+library(tidyverse)
+library(caret)
+library(glmnet)
 ?ames_raw
 ```
 
@@ -91,8 +94,80 @@ Here are few rules:
 
 Your code:
 ```{r,echo=TRUE}
-#
-#
+
+ames_raw$SalePrice <- as.numeric(as.character(ames_raw$SalePrice))
+
+
+ames_raw_2008 <- ames_raw[ames_raw$`Yr Sold` < 2008, ]
+ames_raw_2009 <- ames_raw[ames_raw$`Yr Sold` >= 2008, ]
+
+
+predictors <- c("Lot Area", "Overall Qual", "Gr Liv Area", "Garage Area")
+target <- "SalePrice"
+
+
+x_train <- as.matrix(ames_raw_2008[, predictors])
+y_train <- as.vector(ames_raw_2008[, target])
+x_test <- as.matrix(ames_raw_2009[, predictors])
+y_test <- as.vector(ames_raw_2009[, target])
+
+
+calc_loss <- function(prediction, actual) {
+  difpred <- actual - prediction
+  RMSE <- sqrt(mean(difpred^2))
+  operation_loss <- sum(abs(difpred[difpred < 0])) + sum(0.1 * actual[difpred > 0])
+  return(list(RMSE, operation_loss))
+}
+
+
+ridge_cv <- train(
+  x = x_train,
+  y = y_train,
+  method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(alpha = 0, lambda = seq(0.001, 1, length = 100)),
+  metric = "RMSE"
+)
+
+best_lambda_ridge <- ridge_cv$bestTune$lambda
+
+
+lasso_cv <- train(
+  x = x_train,
+  y = y_train,
+  method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(alpha = 1, lambda = seq(0.001, 1, length = 100)),
+  metric = "RMSE"
+)
+
+best_lambda_lasso <- lasso_cv$bestTune$lambda
+
+elastic_net_cv <- train(
+  x = x_train,
+  y = y_train,
+  method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(alpha = seq(0, 1, length = 10), lambda = seq(0.001, 1, length = 100)),
+  metric = "RMSE"
+)
+
+best_alpha <- elastic_net_cv$bestTune$alpha
+best_lambda_elastic <- elastic_net_cv$bestTune$lambda
+
+ridge_model <- glmnet(x_train, y_train, alpha = 0, lambda = best_lambda_ridge)
+ridge_pred <- predict(ridge_model, newx = x_test)
+
+lasso_model <- glmnet(x_train, y_train, alpha = 1, lambda = best_lambda_lasso)
+lasso_pred <- predict(lasso_model, newx = x_test)
+
+elastic_net_model <- glmnet(x_train, y_train, alpha = best_alpha, lambda = best_lambda_elastic)
+elastic_net_pred <- predict(elastic_net_model, newx = x_test)
+
+ridge_loss <- calc_loss(ridge_pred, y_test)
+lasso_loss <- calc_loss(lasso_pred, y_test)
+elastic_net_loss <- calc_loss(elastic_net_pred, y_test)
+
 ```
 
 Your answer:
@@ -108,8 +183,28 @@ Are the results consistent across different methods?
 
 Your code:
 ```{r,echo=TRUE}
-#
-#
+ridge_coeffs <- coef(ridge_model)
+ridge_intercept <- ridge_coeffs[[1]]
+ridge_variable_coeffs <- as.vector(ridge_coeffs[-1])
+
+lasso_coeffs <- coef(lasso_model)
+lasso_intercept <- lasso_coeffs[[1]]
+lasso_variable_coeffs <- as.vector(lasso_coeffs[-1])
+
+elastic_net_coeffs <- coef(elastic_net_model)
+elastic_net_intercept <- elastic_net_coeffs[[1]]
+elastic_net_variable_coeffs <- as.vector(elastic_net_coeffs[-1])
+
+
+coefficients_df <- data.frame(
+  Variable = c("Intercept", colnames(x_train)),
+  Ridge = c(ridge_intercept, ridge_variable_coeffs),
+  Lasso = c(lasso_intercept, lasso_variable_coeffs),
+  Elastic_Net = c(elastic_net_intercept, elastic_net_variable_coeffs)
+)
+
+print(coefficients_df)
+
 ```
 
 Your answer:
@@ -124,8 +219,46 @@ Please write your answer in full sentences.
 
 Your code:
 ```{r,echo=TRUE}
-#
-#
+num_bootstrap <- 100
+
+fit_models <- function(data) {
+  ridge_coeffs_list <- list()
+  lasso_coeffs_list <- list()
+  elastic_net_coeffs_list <- list()
+  
+  for (i in 1:num_bootstrap) {
+    bootstrap_sample <- data[sample(nrow(data), replace = TRUE), ]
+    
+    ridge_model <- glmnet(as.matrix(bootstrap_sample[, predictors]), bootstrap_sample[, target], alpha = 0, lambda = best_lambda_ridge)
+    lasso_model <- glmnet(as.matrix(bootstrap_sample[, predictors]), bootstrap_sample[, target], alpha = 1, lambda = best_lambda_lasso)
+    elastic_net_model <- glmnet(as.matrix(bootstrap_sample[, predictors]), bootstrap_sample[, target], alpha = best_alpha, lambda = best_lambda_elastic)
+  
+    ridge_coeffs <- coef(ridge_model)[-1]
+    lasso_coeffs <- coef(lasso_model)[-1]
+    elastic_net_coeffs <- coef(elastic_net_model)[-1]
+    
+    ridge_coeffs_list[[i]] <- ridge_coeffs
+    lasso_coeffs_list[[i]] <- lasso_coeffs
+    elastic_net_coeffs_list[[i]] <- elastic_net_coeffs
+  }
+
+  ridge_coeffs_df <- do.call(rbind, ridge_coeffs_list)
+  lasso_coeffs_df <- do.call(rbind, lasso_coeffs_list)
+  elastic_net_coeffs_df <- do.call(rbind, elastic_net_coeffs_list)
+  
+  return(list(ridge = ridge_coeffs_df, lasso = lasso_coeffs_df, elastic_net = elastic_net_coeffs_df))
+}
+
+coefficients_boot <- fit_models(ames_raw_2008)
+
+average_coeffs <- lapply(coefficients_boot, function(coeffs) apply(coeffs, 2, mean))
+sd_coeffs <- lapply(coefficients_boot, function(coeffs) apply(coeffs, 2, sd))
+
+print("Average Coefficients:")
+print(average_coeffs)
+print("Standard Deviations of Coefficients:")
+print(sd_coeffs)
+
 ```
 
 Your answer:
@@ -162,8 +295,13 @@ In this exercise, we will generate simulated data, and will then use this data t
 
 Your code:
 ```{r,echo=TRUE}
-#
-#
+set.seed(123)
+
+n <- 100
+X <- rnorm(n)
+
+epsilon <- rnorm(n)
+
 ```
 
 
@@ -171,8 +309,13 @@ Your code:
 
 Your code:
 ```{r,echo=TRUE}
-#
-#
+beta_0 <- 5
+beta_1 <- 3
+beta_2 <- -2
+beta_3 <- 1
+
+Y <- beta_0 + beta_1 * X + beta_2 * X^2 + beta_3 * X^3 + epsilon
+
 ```
 
 
@@ -180,8 +323,7 @@ Your code:
 
 Your code:
 ```{r,echo=TRUE}
-#
-#
+
 ```
 
 Your answer:
@@ -252,16 +394,23 @@ data(College,package = "ISLR2")
 
 Your code:
 ```{r,echo=TRUE}
-#
-#
+train_index <- createDataPartition(College$Apps, p = 0.8, list = FALSE)
+train_data <- College[train_index, ]
+test_data <- College[-train_index, ]
 ```
 
 (b) Fit a linear model using least squares on the training set, and report the test error obtained.
 
 Your code:
 ```{r,echo=TRUE}
-#
-#
+lm_model <- lm(Apps ~ ., data = train_data)
+
+test_predictions <- predict(lm_model, newdata = test_data)
+
+test_error <- sqrt(mean((test_predictions - test_data$Apps)^2))
+
+print(paste("Test Error (RMSE):", test_error))
+
 ```
 
 Your answer:
@@ -277,8 +426,18 @@ Please write your answer in full sentences.
 
 Your code:
 ```{r,echo=TRUE}
-#
-#
+ridge_model <- cv.glmnet(
+  as.matrix(train_data[, -1]),
+  train_data$Apps,
+  alpha = 0,  
+  nfolds = 10  
+)
+
+test_predictions_ridge <- predict(ridge_model, newx = as.matrix(test_data[, -1]))
+
+test_error_ridge <- sqrt(mean((test_predictions_ridge - test_data$Apps)^2))
+
+print(paste("Ridge Regression Test Error (RMSE):", test_error_ridge))
 ```
 
 Your answer:
